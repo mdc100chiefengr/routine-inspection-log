@@ -69,7 +69,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 </main>
 
 <script>
-const API = "PASTE_WEB_APP_URL_HERE"; // Apps Script /exec URL
+const API = "https://script.google.com/macros/s/AKfycbxPSkrtgTRUENxXjYq-bTRDGqmlJw6CySxggjUrV1Pz71ljbFOqFzVPN4Oc_w8wq1wbLQ/exec"; // Apps Script /exec URL
 let token = "", user = "", locs = {}, loc = "", scanner = null, stream = null, stampTime = "", scanned = false;
 // Area from the QR link (?loc=PUMP-B1-01). Session lives in memory only: closing the browser means signing in again.
 let urlLoc = new URLSearchParams(window.location.search).get("loc") || "";
