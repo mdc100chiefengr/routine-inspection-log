@@ -32,6 +32,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 <p class="sub">Sign in, scan the area's QR code, then take a photo.</p>
 
 <section id="s1">
+  <p class="who" id="areaNote" hidden></p>
   <label for="user">Technician</label>
   <select id="user"><option value="">Loading names...</option></select>
   <label for="pin">PIN</label>
@@ -68,12 +69,17 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 </main>
 
 <script>
-const API = "https://script.google.com/macros/s/AKfycbxPSkrtgTRUENxXjYq-bTRDGqmlJw6CySxggjUrV1Pz71ljbFOqFzVPN4Oc_w8wq1wbLQ/exec"; // Apps Script /exec URL
+const API = "PASTE_WEB_APP_URL_HERE"; // Apps Script /exec URL
 let token = "", user = "", locs = {}, loc = "", scanner = null, stream = null, stampTime = "", scanned = false;
+// Area from the QR link (?loc=PUMP-B1-01). Session lives in memory only: closing the browser means signing in again.
+let urlLoc = new URLSearchParams(window.location.search).get("loc") || "";
+function note() { $("areaNote").hidden = !urlLoc; $("areaNote").textContent = "Area from QR: " + urlLoc; }
 const $ = id => document.getElementById(id);
 const show = id => ["s1","s2","s3","s4"].forEach(s => $(s).hidden = s !== id);
 const msg = (t, bad) => { $("msg").textContent = t || ""; $("msg").style.color = bad ? "var(--er)" : "var(--mu)"; };
 const call = body => fetch(API, { method: "POST", body: JSON.stringify(body) }).then(r => r.json());
+
+note();
 
 // 1. Load technician names
 fetch(API + "?action=users").then(r => r.json()).then(d => {
@@ -89,7 +95,12 @@ $("loginBtn").onclick = async () => {
     const r = await call({ action: "login", name: $("user").value, pin: $("pin").value });
     if (!r.ok) throw new Error(r.error);
     token = r.token; locs = r.locs; user = $("user").value; $("pin").value = "";
-    msg(""); startScan();
+    msg("");
+    if (urlLoc && locs[urlLoc]) { loc = urlLoc; urlLoc = ""; note(); startCam(); }
+    else {
+      const bad = urlLoc; urlLoc = ""; note(); startScan();
+      if (bad) msg("QR code not recognised: " + bad + ". Scan an area code.", true);
+    }
   } catch (e) { msg(e.message, true); }
   $("loginBtn").disabled = false;
 };
@@ -142,7 +153,7 @@ $("sendBtn").onclick = async () => {
   try {
     const r = await call({ action: "submit", token, locationId: loc, clientTime: stampTime,
       remarks: $("remarks").value, photo: $("cv").toDataURL("image/jpeg", 0.72) });
-    if (r.relogin) { msg(r.error, true); token = ""; show("s1"); $("sendBtn").disabled = false; return; }
+    if (r.relogin) { msg(r.error + " The photo was not saved, so retake it after signing in.", true); token = ""; urlLoc = loc; note(); show("s1"); $("sendBtn").disabled = false; return; }
     if (!r.ok) throw new Error(r.error);
     msg(""); $("doneInfo").textContent = locs[loc] + " at " + new Date().toLocaleTimeString("en-GB");
     $("remarks").value = ""; show("s4");
