@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Routine Inspection Log</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+:root{--bg:#eef0f2;--card:#fff;--tx:#14181c;--mu:#56606b;--ac:#0a5c8f;--ok:#1b7a3a;--er:#b3261e;--ln:#cdd3d9}
+@media(prefers-color-scheme:dark){:root{--bg:#101316;--card:#1a1f24;--tx:#e8ecef;--mu:#98a3ae;--ac:#5db4ec;--ok:#4cc474;--er:#ff8a80;--ln:#33393f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px 24px}
+main{max-width:460px;margin:0 auto}
+h1{font-size:1.25rem;margin:0 0 4px}
+.sub{color:var(--mu);margin:0 0 16px;font-size:.9rem}
+section{background:var(--card);border:1px solid var(--ln);border-radius:10px;padding:16px}
+label{display:block;font-weight:600;margin:12px 0 4px}
+select,input,textarea{width:100%;font:inherit;padding:12px;border:1px solid var(--ln);border-radius:8px;background:var(--bg);color:var(--tx)}
+button{width:100%;font:inherit;font-weight:600;padding:14px;margin-top:14px;border:0;border-radius:8px;background:var(--ac);color:#fff}
+button.alt{background:transparent;color:var(--ac);border:1px solid var(--ac)}
+button:disabled{opacity:.5}
+button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid var(--ac);outline-offset:2px}
+#reader,video,canvas{width:100%;border-radius:8px;background:#000;display:block}
+#msg{min-height:1.4em;margin:12px 0 0;font-size:.95rem;color:var(--mu)}
+.who{font-size:.9rem;color:var(--mu);margin:0 0 8px}
+.done{color:var(--ok);font-weight:700;font-size:1.1rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Routine inspection log</h1>
+<p class="sub">Sign in, scan the area's QR code, then take a photo.</p>
+
+<section id="s1">
+  <label for="user">Technician</label>
+  <select id="user"><option value="">Loading names...</option></select>
+  <label for="pin">PIN</label>
+  <input id="pin" type="password" inputmode="numeric" autocomplete="off">
+  <button id="loginBtn">Sign in</button>
+</section>
+
+<section id="s2" hidden>
+  <p class="who" id="who2"></p>
+  <div id="reader"></div>
+  <p class="sub" style="margin-top:10px">Point the camera at the QR code posted in the area.</p>
+</section>
+
+<section id="s3" hidden>
+  <p class="who" id="locname"></p>
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="cv" hidden></canvas>
+  <div id="remarkBox" hidden>
+    <label for="remarks">Remarks (optional)</label>
+    <textarea id="remarks" rows="2"></textarea>
+  </div>
+  <button id="snapBtn">Take photo</button>
+  <button id="retakeBtn" class="alt" hidden>Retake photo</button>
+  <button id="sendBtn" hidden>Submit inspection</button>
+</section>
+
+<section id="s4" hidden>
+  <p class="done">Inspection logged.</p>
+  <p class="sub" id="doneInfo"></p>
+  <button id="nextBtn">Scan next area</button>
+</section>
+
+<p id="msg" role="status"></p>
+</main>
+
+<script>
+const API = "https://script.google.com/macros/s/AKfycbxPSkrtgTRUENxXjYq-bTRDGqmlJw6CySxggjUrV1Pz71ljbFOqFzVPN4Oc_w8wq1wbLQ/exec"; // Apps Script /exec URL
+let token = "", user = "", locs = {}, loc = "", scanner = null, stream = null, stampTime = "", scanned = false;
+const $ = id => document.getElementById(id);
+const show = id => ["s1","s2","s3","s4"].forEach(s => $(s).hidden = s !== id);
+const msg = (t, bad) => { $("msg").textContent = t || ""; $("msg").style.color = bad ? "var(--er)" : "var(--mu)"; };
+const call = body => fetch(API, { method: "POST", body: JSON.stringify(body) }).then(r => r.json());
+
+// 1. Load technician names
+fetch(API + "?action=users").then(r => r.json()).then(d => {
+  $("user").innerHTML = '<option value="">Select your name</option>' +
+    d.users.map(n => '<option>' + n.replace(/</g, "&lt;") + '</option>').join("");
+}).catch(() => msg("Could not load names. Check your connection and reload.", true));
+
+// 2. PIN login (verified on the server)
+$("loginBtn").onclick = async () => {
+  if (!$("user").value || !$("pin").value) return msg("Select your name and enter your PIN.", true);
+  $("loginBtn").disabled = true; msg("Checking PIN...");
+  try {
+    const r = await call({ action: "login", name: $("user").value, pin: $("pin").value });
+    if (!r.ok) throw new Error(r.error);
+    token = r.token; locs = r.locs; user = $("user").value; $("pin").value = "";
+    msg(""); startScan();
+  } catch (e) { msg(e.message, true); }
+  $("loginBtn").disabled = false;
+};
+
+// 3. Live QR scan
+function startScan() {
+  show("s2"); scanned = false; $("who2").textContent = "Signed in as " + user;
+  scanner = new Html5Qrcode("reader");
+  scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 240 }, txt => {
+    if (scanned) return;
+    let id = txt.trim(); const m = id.match(/[?&]loc=([^&]+)/); if (m) id = decodeURIComponent(m[1]);
+    if (!locs[id]) return msg("QR code not recognised: " + id, true);
+    scanned = true; loc = id;
+    scanner.stop().then(() => { scanner.clear(); msg(""); startCam(); });
+  }, () => {}).catch(e => msg("Camera blocked or unavailable. Allow camera access and reload.", true));
+}
+
+// 4. Live camera only (no gallery upload)
+async function startCam() {
+  show("s3"); $("locname").textContent = locs[loc] + " (" + loc + ")";
+  $("cam").hidden = false; $("cv").hidden = true; $("remarkBox").hidden = true;
+  $("snapBtn").hidden = false; $("retakeBtn").hidden = true; $("sendBtn").hidden = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    $("cam").srcObject = stream;
+  } catch (e) { msg("Camera blocked or unavailable.", true); }
+}
+const stopCam = () => { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; };
+
+// 5. Capture + burn stamp (area, time, technician) into the pixels
+$("snapBtn").onclick = () => {
+  const v = $("cam"); if (!v.videoWidth) return;
+  const k = Math.min(1, 1280 / v.videoWidth), w = Math.round(v.videoWidth * k), h = Math.round(v.videoHeight * k);
+  const c = $("cv"); c.width = w; c.height = h;
+  const x = c.getContext("2d"); x.drawImage(v, 0, 0, w, h);
+  const now = new Date(); stampTime = now.toISOString();
+  const lines = [locs[loc] + " [" + loc + "]", now.toLocaleString("en-GB"), "Technician: " + user];
+  const fs = Math.round(w / 26), pad = fs * 0.5, bh = lines.length * fs * 1.3 + pad;
+  x.fillStyle = "rgba(0,0,0,.65)"; x.fillRect(0, h - bh, w, bh);
+  x.fillStyle = "#fff"; x.font = "bold " + fs + "px sans-serif"; x.textBaseline = "top";
+  lines.forEach((l, i) => x.fillText(l, pad, h - bh + pad / 2 + i * fs * 1.3));
+  stopCam(); v.hidden = true; c.hidden = false;
+  $("snapBtn").hidden = true; $("retakeBtn").hidden = false; $("sendBtn").hidden = false; $("remarkBox").hidden = false;
+};
+$("retakeBtn").onclick = startCam;
+
+// 6. Upload
+$("sendBtn").onclick = async () => {
+  $("sendBtn").disabled = true; msg("Uploading photo...");
+  try {
+    const r = await call({ action: "submit", token, locationId: loc, clientTime: stampTime,
+      remarks: $("remarks").value, photo: $("cv").toDataURL("image/jpeg", 0.72) });
+    if (r.relogin) { msg(r.error, true); token = ""; show("s1"); $("sendBtn").disabled = false; return; }
+    if (!r.ok) throw new Error(r.error);
+    msg(""); $("doneInfo").textContent = locs[loc] + " at " + new Date().toLocaleTimeString("en-GB");
+    $("remarks").value = ""; show("s4");
+  } catch (e) { msg("Upload failed: " + e.message + " Tap Submit to retry.", true); }
+  $("sendBtn").disabled = false;
+};
+$("nextBtn").onclick = startScan;
+</script>
+</body>
+</html>
